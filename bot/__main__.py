@@ -1,72 +1,140 @@
 import asyncio
-import aiofiles
-import aiohttp
 from aiohttp import web
-from bs4 import BeautifulSoup
+from time import time, monotonic
 from datetime import datetime
-import os
+from sys import executable
+from os import execl as osexecl
+from asyncio import create_subprocess_exec, gather, run as asyrun
+from uuid import uuid4
+from base64 import b64decode
+from importlib import import_module, reload
+
 from requests import get as rget
 from pytz import timezone
+from bs4 import BeautifulSoup
 from signal import signal, SIGINT
-from base64 import b64decode
-from uuid import uuid4
-from importlib import reload
+from aiofiles.os import path as aiopath, remove as aioremove
+from aiofiles import open as aiopen
+from pyrogram import idle
+from pyrogram.enums import ChatMemberStatus, ChatType
+from pyrogram.handlers import MessageHandler, CallbackQueryHandler
+from pyrogram.filters import command, private, regex
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# Assuming bot is properly imported from bot module
-from bot import bot, config_dict, user_data, LOGGER, Interval, DATABASE_URL
+from bot import bot, user, bot_name, config_dict, user_data, botStartTime, LOGGER, Interval, DATABASE_URL, QbInterval, INCOMPLETE_TASK_NOTIFIER, scheduler
 from bot.version import get_version
-from bot.helper.ext_utils.bot_utils import (
-    get_readable_time,
-    sync_to_async,
-    update_user_ldata,
-)
-from bot.helper.ext_utils.db_handler import DbManager
-from bot.helper.telegram_helper import (
-    BotCommands,
-    ButtonMaker,
-    CustomFilters,
-    BotTheme,
-    sendMessage,
-    editMessage,
-    sendFile,
-    delete_all_messages,
-)
-from bot.helper.listeners.aria2_listener import start_aria2_listener
+from .helper.ext_utils.fs_utils import start_cleanup, clean_all, exit_clean_up
+from .helper.ext_utils.bot_utils import get_readable_time, cmd_exec, sync_to_async, new_task, set_commands, update_user_ldata, get_stats
+from .helper.ext_utils.db_handler import DbManger
+from .helper.telegram_helper.bot_commands import BotCommands
+from .helper.telegram_helper.message_utils import sendMessage, editMessage, editReplyMarkup, sendFile, deleteMessage, delete_all_messages
+from .helper.telegram_helper.filters import CustomFilters
+from .helper.telegram_helper.button_build import ButtonMaker
+from .helper.listeners.aria2_listener import start_aria2_listener
+from .helper.themes import BotTheme
+from .modules import authorize, clone, gd_count, gd_delete, gd_list, cancel_mirror, mirror_leech, status, torrent_search, torrent_select, ytdlp, \
+                     rss, shell, eval, users_settings, bot_settings, speedtest, save_msg, images, imdb, anilist, mediainfo, mydramalist, gen_pyro_sess, \
+                     gd_clean, broadcast, category_select
+
+async def health_check(request):
+    return web.Response(text="OK", content_type="text/plain")
 
 async def stats(client, message):
     msg, btns = await get_stats(message)
     await sendMessage(message, msg, btns, photo='IMAGES')
 
+@new_task
 async def start(client, message):
     buttons = ButtonMaker()
     buttons.ubutton(BotTheme('ST_BN1_NAME'), BotTheme('ST_BN1_URL'))
     buttons.ubutton(BotTheme('ST_BN2_NAME'), BotTheme('ST_BN2_URL'))
     reply_markup = buttons.build_menu(2)
-    # Add your custom logic for handling start command based on message.command
+    if len(message.command) > 1 and message.command[1] == "wzmlx":
+        await deleteMessage(message)
+    elif len(message.command) > 1 and config_dict['TOKEN_TIMEOUT']:
+        userid = message.from_user.id
+        encrypted_url = message.command[1]
+        input_token, pre_uid = (b64decode(encrypted_url.encode()).decode()).split('&&')
+        if int(pre_uid) != userid:
+            return await sendMessage(message, BotTheme('OWN_TOKEN_GENERATE'))
+        data = user_data.get(userid, {})
+        if 'token' not in data or data['token'] != input_token:
+            return await sendMessage(message, BotTheme('USED_TOKEN'))
+        elif config_dict['LOGIN_PASS'] is not None and data['token'] == config_dict['LOGIN_PASS']:
+            return await sendMessage(message, BotTheme('LOGGED_PASSWORD'))
+        buttons.ibutton(BotTheme('ACTIVATE_BUTTON'), f'pass {input_token}', 'header')
+        reply_markup = buttons.build_menu(2)
+        msg = BotTheme('TOKEN_MSG', token=input_token, validity=get_readable_time(int(config_dict["TOKEN_TIMEOUT"])))
+        return await sendMessage(message, msg, reply_markup)
+    elif await CustomFilters.authorized(client, message):
+        start_string = BotTheme('ST_MSG', help_command=f"/{BotCommands.HelpCommand}")
+        await sendMessage(message, start_string, reply_markup, photo='IMAGES')
+    elif config_dict['BOT_PM']:
+        await sendMessage(message, BotTheme('ST_BOTPM'), reply_markup, photo='IMAGES')
+    else:
+        await sendMessage(message, BotTheme('ST_UNAUTH'), reply_markup, photo='IMAGES')
+    await DbManger().update_pm_users(message.from_user.id)
 
 async def token_callback(_, query):
-    # Add your implementation for token callback logic
+    user_id = query.from_user.id
+    input_token = query.data.split()[1]
+    data = user_data.get(user_id, {})
+    if 'token' not in data or data['token'] != input_token:
+        return await query.answer('Already Used, Generate New One', show_alert=True)
+    update_user_ldata(user_id, 'token', str(uuid4()))
+    update_user_ldata(user_id, 'time', time())
+    await query.answer('Activated Temporary Token!', show_alert=True)
+    kb = query.message.reply_markup.inline_keyboard[1:]
+    kb.insert(0, [InlineKeyboardButton(BotTheme('ACTIVATED'), callback_data='pass activated')])
+    await editReplyMarkup(query.message, InlineKeyboardMarkup(kb))
 
 async def login(_, message):
-    # Add your implementation for login logic
+    if config_dict['LOGIN_PASS'] is None:
+        return
+    elif len(message.command) > 1:
+        user_id = message.from_user.id
+        input_pass = message.command[1]
+        if user_data.get(user_id, {}).get('token', '') == config_dict['LOGIN_PASS']:
+            return await sendMessage(message, BotTheme('LOGGED_IN'))
+        if input_pass != config_dict['LOGIN_PASS']:
+            return await sendMessage(message, BotTheme('INVALID_PASS'))
+        update_user_ldata(user_id, 'token', config_dict['LOGIN_PASS'])
+        return await sendMessage(message, BotTheme('PASS_LOGGED'))
+    else:
+        await sendMessage(message, BotTheme('LOGIN_USED'))
 
 async def restart(client, message):
-    # Add your implementation for restart logic
+    restart_message = await sendMessage(message, BotTheme('RESTARTING'))
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
+    await delete_all_messages()
+    for interval in [QbInterval, Interval]:
+        if interval:
+            interval[0].cancel()
+    await sync_to_async(clean_all)
+    proc1 = await create_subprocess_exec('pkill', '-9', '-f', 'gunicorn|aria2c|qbittorrent-nox|ffmpeg|rclone')
+    proc2 = await create_subprocess_exec('python3', 'update.py')
+    await gather(proc1.wait(), proc2.wait())
+    async with aiopen(".restartmsg", "w") as f:
+        await f.write(f"{restart_message.chat.id}\n{restart_message.id}\n")
+    osexecl(executable, executable, "-m", "bot")
 
 async def ping(_, message):
-    # Add your implementation for ping logic
-
+    start_time = monotonic()
+    reply = await sendMessage(message, BotTheme('PING'))
+    end_time = monotonic()
+    ping_time_ms = int((end_time - start_time) * 1000)
+    await editMessage(reply, BotTheme('PING_VALUE', value=ping_time_ms))
+    
 async def log(_, message):
-    # Add your implementation for log logic
+    buttons = ButtonMaker()
+    buttons.ibutton(BotTheme('LOG_DISPLAY_BT'), f'wzmlx {message.from_user.id} logdisplay')
+    buttons.ibutton(BotTheme('WEB_PASTE_BT'), f'wzmlx {message.from_user.id} webpaste')
+    await sendFile(message, 'log.txt', buttons=buttons.build_menu(1))
 
-async def search_images():
-    # Add your implementation for image search logic
-
-async def bot_help(client, message):
-    # Add your implementation for bot help logic
+# Continue with other async functions...
 
 async def restart_notification():
-    # Add your implementation for restart notification logic
     now = datetime.now(timezone(config_dict['TIMEZONE']))
     if await aiopath.isfile(".restartmsg"):
         with open(".restartmsg") as f:
@@ -84,14 +152,11 @@ async def restart_notification():
         except Exception as e:
             LOGGER.error(e)
 
-    if config_dict['INCOMPLETE_TASK_NOTIFIER'] and DATABASE_URL:
+    if INCOMPLETE_TASK_NOTIFIER and DATABASE_URL:
         if notifier_dict := await DbManager().get_incomplete_tasks():
             for cid, data in notifier_dict.items():
-                msg = (
-                    BotTheme('RESTART_SUCCESS', time=now.strftime('%I:%M:%S %p'), date=now.strftime('%d/%m/%y'), timz=config_dict['TIMEZONE'], version=get_version())
-                    if cid == chat_id
-                    else BotTheme('RESTARTED')
-                )
+                msg = (BotTheme('RESTART_SUCCESS', time=now.strftime('%I:%M:%S %p'), date=now.strftime('%d/%m/%y'), timz=config_dict['TIMEZONE'], version=get_version())
+                       if cid == chat_id else BotTheme('RESTARTED'))
                 msg += "\n\n⌬ <b><i>Incomplete Tasks!</i></b>"
                 for tag, links in data.items():
                     msg += f"\n➲ <b>User:</b> {tag}\n┖ <b>Tasks:</b>"
@@ -111,25 +176,49 @@ async def restart_notification():
             LOGGER.error(e)
         await aioremove(".restartmsg")
 
+
 async def log_check():
-    # Add your implementation for log check logic
+    if config_dict['LEECH_LOG_ID']:
+        for chat_id in config_dict['LEECH_LOG_ID'].split():
+            chat_id, *topic_id = chat_id.split(":")
+            try:
+                try:
+                    chat = await bot.get_chat(int(chat_id))
+                except Exception:
+                    LOGGER.error(f"Not Connected Chat ID : {chat_id}, Make sure the Bot is Added!")
+                    continue
+                if chat.type == ChatType.CHANNEL:
+                    if not (await chat.get_member(bot.me.id)).privileges.can_post_messages:
+                        LOGGER.error(f"Not Connected Chat ID : {chat_id}, Make the Bot is Admin in Channel to Connect!")
+                        continue
+                    if user and not (await chat.get_member(user.me.id)).privileges.can_post_messages:
+                        LOGGER.error(f"Not Connected Chat ID : {chat_id}, Make the User is Admin in Channel to Connect!")
+                        continue
+                elif chat.type == ChatType.SUPERGROUP:
+                    if not (await chat.get_member(bot.me.id)).status in [ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR]:
+                        LOGGER.error(f"Not Connected Chat ID : {chat_id}, Make the Bot is Admin in Group to Connect!")
+                        continue
+                    if user and not (await chat.get_member(user.me.id)).status in [ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR]:
+                        LOGGER.error(f"Not Connected Chat ID : {chat_id}, Make the User is Admin in Group to Connect!")
+                        continue
+                LOGGER.info(f"Connected Chat ID : {chat_id}")
+            except Exception as e:
+                LOGGER.error(f"Not Connected Chat ID : {chat_id}, ERROR: {e}")
 
 async def health_check(request):
     return web.Response(text="OK", content_type="text/plain")
+
 
 async def main():
     tasks = [
         start_cleanup(),
         torrent_search.initiate_search_tools(),
         restart_notification(),
-        search_images(),
-        set_commands(bot),
         log_check(),
-        start_aria2_listener(),
+        set_commands(bot),
     ]
     await asyncio.gather(*tasks)
 
-    # Add message handlers
     bot.add_handler(MessageHandler(start, filters=command(BotCommands.StartCommand) & private))
     bot.add_handler(CallbackQueryHandler(token_callback, filters=regex(r'^pass')))
     bot.add_handler(MessageHandler(login, filters=command(BotCommands.LoginCommand) & private))
@@ -138,24 +227,22 @@ async def main():
     bot.add_handler(MessageHandler(ping, filters=command(BotCommands.PingCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
     bot.add_handler(MessageHandler(bot_help, filters=command(BotCommands.HelpCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
     bot.add_handler(MessageHandler(stats, filters=command(BotCommands.StatsCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
-    
+
     LOGGER.info("Bot Started Successfully!")
     signal(SIGINT, exit_clean_up)
 
+    # Set up a web server for health check
     app = web.Application()
     app.router.add_route('GET', '/health', health_check)
+    
+    # Assuming `runner` is an instance of aiohttp.web.AppRunner()
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8888)  # Changed port to 8888
+    site = web.TCPSite(runner, '0.0.0.0', 8080)  # Customize your host and port here
     await site.start()
+    LOGGER.info("Health check server started at http://0.0.0.0:8080/health")
 
-    # Keep the event loop running indefinitely
-    while True:
-        try:
-            await asyncio.sleep(60)  # Keep event loop alive with periodic sleep
-        except KeyboardInterrupt:
-            LOGGER.info("Bot Stopped by User.")
-            break
+    await idle()  # Start the main event loop for the bot
 
 if __name__ == "__main__":
     asyncio.run(main())
