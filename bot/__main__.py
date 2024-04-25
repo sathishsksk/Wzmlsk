@@ -129,22 +129,16 @@ async def main():
     ]
     await asyncio.gather(*tasks)
 
-    bot.add_handler(MessageHandler(
-        start, filters=command(BotCommands.StartCommand) & private))
-    bot.add_handler(CallbackQueryHandler(
-        token_callback, filters=regex(r'^pass')))
-    bot.add_handler(MessageHandler(
-        login, filters=command(BotCommands.LoginCommand) & private))
-    bot.add_handler(MessageHandler(log, filters=command(
-        BotCommands.LogCommand) & CustomFilters.sudo))
-    bot.add_handler(MessageHandler(restart, filters=command(
-        BotCommands.RestartCommand) & CustomFilters.sudo))
-    bot.add_handler(MessageHandler(ping, filters=command(
-        BotCommands.PingCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
-    bot.add_handler(MessageHandler(bot_help, filters=command(
-        BotCommands.HelpCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
-    bot.add_handler(MessageHandler(stats, filters=command(
-        BotCommands.StatsCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
+    # Add message handlers
+    bot.add_handler(MessageHandler(start, filters=command(BotCommands.StartCommand) & private))
+    bot.add_handler(CallbackQueryHandler(token_callback, filters=regex(r'^pass')))
+    bot.add_handler(MessageHandler(login, filters=command(BotCommands.LoginCommand) & private))
+    bot.add_handler(MessageHandler(log, filters=command(BotCommands.LogCommand) & CustomFilters.sudo))
+    bot.add_handler(MessageHandler(restart, filters=command(BotCommands.RestartCommand) & CustomFilters.sudo))
+    bot.add_handler(MessageHandler(ping, filters=command(BotCommands.PingCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
+    bot.add_handler(MessageHandler(bot_help, filters=command(BotCommands.HelpCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
+    bot.add_handler(MessageHandler(stats, filters=command(BotCommands.StatsCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
+    
     LOGGER.info("Bot Started Successfully!")
     signal(SIGINT, exit_clean_up)
 
@@ -155,6 +149,7 @@ async def main():
     site = web.TCPSite(runner, '0.0.0.0', 8888)  # Changed port to 8888
     await site.start()
 
+    # Keep the event loop running indefinitely
     while True:
         try:
             await asyncio.sleep(60)  # Keep event loop alive with periodic sleep
@@ -163,5 +158,4 @@ async def main():
             break
 
 if __name__ == "__main__":
-    asyncio.get_event_loop().run_until_complete(main())
-    asyncio.get_event_loop().run_forever()
+    asyncio.run(main())
