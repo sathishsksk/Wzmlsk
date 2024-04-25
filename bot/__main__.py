@@ -239,7 +239,9 @@ async def log_check():
                 LOGGER.info(f"Connected Chat ID : {chat_id}")
             except Exception as e:
                 LOGGER.error(f"Not Connected Chat ID : {chat_id}, ERROR: {e}")
-    
+
+async def health_check(request):
+    return web.Response(text="OK", content_type="text/plain")
 
 async def main():
     await gather(start_cleanup(), torrent_search.initiate_search_tools(), restart_notification(), search_images(), set_commands(bot), log_check())
@@ -261,19 +263,15 @@ async def main():
         BotCommands.HelpCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
     bot.add_handler(MessageHandler(stats, filters=command(
         BotCommands.StatsCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
-    LOGGER.info(f"WZML-X Bot [@{bot_name}] Started!")
-    if user:
-        LOGGER.info(f"WZ's User [@{user.me.username}] Ready!")
+    LOGGER.info("Bot Started Successfully!")
     signal(SIGINT, exit_clean_up)
 
-async def stop_signals():
-    if user:
-        await gather(bot.stop(), user.stop())
-    else:
-        await bot.stop()
+    app = web.Application()
+    app.router.add_route('GET', '/health', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8888)  # Changed port to 8888
+    await site.start()
 
-
-bot_run = bot.loop.run_until_complete
-bot_run(main())
-bot_run(idle())
-bot_run(stop_signals())
+bot.loop.run_until_complete(main())
+bot.loop.run_forever()
