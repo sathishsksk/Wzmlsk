@@ -195,18 +195,14 @@ async def main():
     LOGGER.info("Bot Started Successfully!")
     signal(SIGINT, exit_clean_up)
 
-    # Set up a web server for health check
     app = web.Application()
     app.router.add_route('GET', '/health', health_check)
-    
-    # Assuming `runner` is an instance of aiohttp.web.AppRunner()
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8080)  # Customize your host and port here
+    site = web.TCPSite(runner, '0.0.0.0', 8888)  # Changed port to 8888
     await site.start()
-    LOGGER.info("Health check server started at http://0.0.0.0:8080/health")
+  
+    bot.loop.run_forever()
 
-    await idle()  # Start the main event loop for the bot
-
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == '__main__':
+    bot.loop.run_until_complete(main())
