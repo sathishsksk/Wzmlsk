@@ -176,4 +176,29 @@ async def restart_notification():
 
     if await aiopen(restart_msg_file, "r"):
         try:
-            await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=BotTheme('RESTART_SUCCESS', time=now.strftime('%I:%M:%S
+            await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=BotTheme('RESTART_SUCCESS', time=now.strftime('%I:%M:%S %p'), date=now.strftime('%d/%m/%y'), timz=config_dict['TIMEZONE'], version=get_version()))
+        except Exception as e:
+            LOGGER.error(f"Failed to edit restart message: {e}")
+
+# Define your message handlers and callbacks here as needed
+# Example message handler:
+# message_handler = MessageHandler(callback, filters=Filters.text)
+# Example callback handler:
+# callback_handler = CallbackQueryHandler(callback)
+
+# Add your handlers to the bot here
+# bot.add_handler(message_handler)
+# bot.add_handler(callback_handler)
+
+# Ensure the bot starts and runs
+if __name__ == "__main__":
+    # Start your asyncio event loop and run the bot
+    try:
+        start_cleanup()
+        scheduler = await start_aria2_listener()
+        bot.start()
+        idle()
+    except KeyboardInterrupt:
+        exit_clean_up()
+    except Exception as e:
+        LOGGER.exception(f"Failed to start bot: {e}")
