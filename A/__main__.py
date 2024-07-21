@@ -1,8 +1,10 @@
+import asyncio
+from aiohttp import web
 from time import time, monotonic
 from datetime import datetime
 from sys import executable
 from os import execl as osexecl
-from asyncio import create_subprocess_exec, gather, run as asyrun
+from asyncio import create_subprocess_exec, gather
 from uuid import uuid4
 from base64 import b64decode
 from importlib import import_module, reload
@@ -14,7 +16,6 @@ from pyrogram.enums import ChatMemberStatus, ChatType
 from pyrogram.handlers import MessageHandler, CallbackQueryHandler
 from pyrogram.filters import command, private, regex
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiohttp import web  # Added import for aiohttp
 
 from bot import bot, user, bot_name, config_dict, user_data, botStartTime, LOGGER, Interval, DATABASE_URL, QbInterval, INCOMPLETE_TASK_NOTIFIER, scheduler
 from bot.version import get_version
@@ -30,6 +31,9 @@ from .helper.themes import BotTheme
 from .modules import authorize, clone, gd_count, gd_delete, gd_list, cancel_mirror, mirror_leech, status, torrent_search, torrent_select, ytdlp, \
                      rss, shell, eval, users_settings, bot_settings, speedtest, save_msg, images, imdb, anilist, mediainfo, mydramalist, gen_pyro_sess, \
                      gd_clean, broadcast, category_select
+
+async def health_check(request):
+    return web.Response(text="OK", content_type="text/plain")
 
 async def stats(client, message):
     msg, btns = await get_stats(message)
@@ -115,49 +119,14 @@ async def ping(_, message):
     start_time = monotonic()
     reply = await sendMessage(message, BotTheme('PING'))
     end_time = monotonic()
-    await editMessage(reply, BotTheme('PING_VALUE', value=int((end_time - start_time) * 1000)))
+    ping_time_ms = int((end_time - start_time) * 1000)
+    await editMessage(reply, BotTheme('PING_VALUE', value=ping_time_ms))
 
 async def log(_, message):
     buttons = ButtonMaker()
     buttons.ibutton(BotTheme('LOG_DISPLAY_BT'), f'wzmlx {message.from_user.id} logdisplay')
     buttons.ibutton(BotTheme('WEB_PASTE_BT'), f'wzmlx {message.from_user.id} webpaste')
     await sendFile(message, 'log.txt', buttons=buttons.build_menu(1))
-
-async def search_images():
-    if not (query_list := config_dict['IMG_SEARCH']):
-        return
-    try:
-        total_pages = config_dict['IMG_PAGE']
-        base_url = "https://www.wallpaperflare.com/search"
-        for query in query_list:
-            query = query.strip().replace(" ", "+")
-            for page in range(1, total_pages + 1):
-                url = f"{base_url}?wallpaper={query}&width=1280&height=720&page={page}"
-                r = rget(url)
-                soup = BeautifulSoup(r.text, "html.parser")
-                images = soup.select('img[data-src^="https://c4.wallpaperflare.com/wallpaper"]')
-                if len(images) == 0:
-                    LOGGER.info("Maybe Site is Blocked on your Server, Add Images Manually !!")
-                for img in images:
-                    img_url = img['data-src']
-                    if img_url not in config_dict['IMAGES']:
-                        config_dict['IMAGES'].append(img_url)
-        if len(config_dict['IMAGES']) != 0:
-            config_dict['STATUS_LIMIT'] = 2
-        if DATABASE_URL:
-            await DbManger().update_config({'IMAGES': config_dict['IMAGES'], 'STATUS_LIMIT': config_dict['STATUS_LIMIT']})
-    except Exception as e:
-        LOGGER.error(f"An error occurred: {e}")
-
-async def bot_help(client, message):
-    buttons = ButtonMaker()
-    user_id = message.from_user.id
-    buttons.ibutton(BotTheme('BASIC_BT'), f'wzmlx {user_id} guide basic')
-    buttons.ibutton(BotTheme('USER_BT'), f'wzmlx {user_id} guide users')
-    buttons.ibutton(BotTheme('MICS_BT'), f'wzmlx {user_id} guide miscs')
-    buttons.ibutton(BotTheme('O_S_BT'), f'wzmlx {user_id} guide admin')
-    buttons.ibutton(BotTheme('CLOSE_BT'), f'wzmlx {user_id} close')
-    await sendMessage(message, BotTheme('HELP_HEADER'), buttons.build_menu(2))
 
 async def restart_notification():
     now = datetime.now(timezone(config_dict['TIMEZONE']))
@@ -180,110 +149,78 @@ async def restart_notification():
     if INCOMPLETE_TASK_NOTIFIER and DATABASE_URL:
         if notifier_dict := await DbManger().get_incomplete_tasks():
             for cid, data in notifier_dict.items():
-                msg = BotTheme('RESTART_SUCCESS', time=now.strftime('%I:%M:%S %p'), date=now.strftime('%d/%m/%y'), timz=config_dict['TIMEZONE'], version=get_version()) if cid == chat_id else BotTheme('RESTARTED')
+                msg = (BotTheme('RESTART_SUCCESS', time=now.strftime('%I:%M:%S %p'), date=now.strftime('%d/%m/%y'), timz=config_dict['TIMEZONE'], version=get_version())
+                       if cid == chat_id else BotTheme('RESTARTED'))
                 msg += "\n\n⌬ <b><i>Incomplete Tasks!</i></b>"
                 for tag, links in data.items():
                     msg += f"\n➲ <b>User:</b> {tag}\n┖ <b>Tasks:</b>"
                     for index, link in enumerate(links, start=1):
-                        msg_link, source = next(iter(link.items()))
-                        msg += f" {index}. <a href='{source}'>S</a> ->  <a href='{msg_link}'>L</a> |"
-                        if len(msg.encode()) > 4000:
-                            await send_incomplete_task_message(cid, msg)
-                            msg = ''
-                if msg:
-                    await send_incomplete_task_message(cid, msg)
+                        msg_link, time = link
+                        msg += f"\n  ⌷ {index} | <b>Link:</b> <a href='{msg_link}'>Here</a> | <b>Time:</b> {time}"
+                await send_incomplete_task_message(cid, msg)
+        elif chat_id and await aiopath.isfile(".restartmsg"):
+            await send_incomplete_task_message(chat_id, "⌬ <b><i>Restarted Successfully!</i></b>")
+    elif 'Scheduled' not in now.strftime("%A") and restart_notification in bot.get_me().statuses:
+        await bot.send_message(config_dict['USER_ID'], BotTheme('BOTS_RUNNING'))
+    LOGGER.info("All processes were successfully restarted!")
 
-    if await aiopath.isfile(".restartmsg"):
-        try:
-            await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=BotTheme('RESTART_SUCCESS', time=now.strftime('%I:%M:%S %p'), date=now.strftime('%d/%m/%y'), timz=config_dict['TIMEZONE'], version=get_version()))
-        except Exception as e:
-            LOGGER.error(e)
-        await aioremove(".restartmsg")
+async def log_check(_, message):
+    buttons = ButtonMaker()
+    buttons.ubutton(BotTheme('LG_BN1_NAME'), BotTheme('LG_BN1_URL'))
+    buttons.ubutton(BotTheme('LG_BN2_NAME'), BotTheme('LG_BN2_URL'))
+    await sendMessage(message, BotTheme('LG_MSG'), buttons.build_menu(2), photo='IMAGES')
 
-async def log_check():
-    if config_dict['LEECH_LOG_ID']:
-        for chat_id in config_dict['LEECH_LOG_ID']:
-            chat_id, *topic_id = chat_id.split(":")
-            try:
-                try:
-                    chat = await bot.get_chat(int(chat_id))
-                except Exception:
-                    LOGGER.error(f"Not Connected Chat ID : {chat_id}, Make sure the Bot is Added!")
-                    continue
-                if chat.type == ChatType.CHANNEL:
-                    if not (await chat.get_member(bot.me.id)).can_send_messages:
-                        LOGGER.error(f"Not Connected Chat ID : {chat_id}, Make the Bot is Admin in Channel to Connect!")
-                        continue
-                    if user and not (await chat.get_member(user.me.id)).can_send_messages:
-                        LOGGER.error(f"Not Connected Chat ID : {chat_id}, Make the User is Admin in Channel to Connect!")
-                        continue
-                elif chat.type == ChatType.SUPERGROUP:
-                    if not (await chat.get_member(bot.me.id)).status in [ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR]:
-                        LOGGER.error(f"Not Connected Chat ID : {chat_id}, Make the Bot is Admin in Group to Connect!")
-                        continue
-                    if user and not (await chat.get_member(user.me.id)).status in [ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR]:
-                        LOGGER.error(f"Not Connected Chat ID : {chat_id}, Make the User is Admin in Group to Connect!")
-                        continue
-                LOGGER.info(f"Connected Chat ID : {chat_id}")
-            except Exception as e:
-                LOGGER.error(f"Not Connected Chat ID : {chat_id}, ERROR: {e}")
+async def set_commands(bot):
+    try:
+        await bot.set_my_commands([
+            (BotCommands.StartCommand, BotTheme('ST_DESCR')),
+            (BotCommands.HelpCommand, BotTheme('ST_DESCR1')),
+            (BotCommands.StatsCommand, BotTheme('ST_DESCR2')),
+            (BotCommands.LogCommand, BotTheme('ST_DESCR3')),
+            (BotCommands.RestartCommand, BotTheme('ST_DESCR4')),
+            (BotCommands.PingCommand, BotTheme('ST_DESCR5'))
+        ])
+    except Exception as e:
+        LOGGER.error(e)
 
-async def health_check(request):
-    return web.Response(text="OK")
+async def start_aria2_listener():
+    await start_aria2_listener()
 
-async def main():
-    # Set up your existing asynchronous tasks here...
-
-    # Create an aiohttp web Application
-    app = web.Application()
-    app.router.add_get('/health', health_check)  # Endpoint for health check
-
-    # Create an aiohttp server
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8080)  # Change port as needed
-    await site.start()
-
-    # Run your existing asynchronous tasks
-    await gather(start_cleanup(), torrent_search.initiate_search_tools(), restart_notification(), search_images(), set_commands(bot), log_check())
-    await sync_to_async(start_aria2_listener, wait=False)
-
-    # Add Pyrogram message handlers and start the bot
-    bot.add_handler(MessageHandler(
-        start, filters=command(BotCommands.StartCommand) & private))
-    bot.add_handler(CallbackQueryHandler(
-        token_callback, filters=regex(r'^pass')))
-    bot.add_handler(MessageHandler(
-        login, filters=command(BotCommands.LoginCommand) & private))
-    bot.add_handler(MessageHandler(log, filters=command(
-        BotCommands.LogCommand) & CustomFilters.sudo))
-    bot.add_handler(MessageHandler(restart, filters=command(
-        BotCommands.RestartCommand) & CustomFilters.sudo))
-    bot.add_handler(MessageHandler(ping, filters=command(
-        BotCommands.PingCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
-    bot.add_handler(MessageHandler(bot_help, filters=command(
-        BotCommands.HelpCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
-    bot.add_handler(MessageHandler(stats, filters=command(
-        BotCommands.StatsCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
-
-    # Log bot start information
-    LOGGER.info(f"WZML-X Bot [@{bot_name}] Started!")
-    if user:
-        LOGGER.info(f"WZ's User [@{user.me.username}] Ready!")
-
-    # Register signal handler for clean exit
-    signal(SIGINT, exit_clean_up)
-
-    # Run the bot idle
+async def idle():
     await idle()
 
-async def stop_signals():
-    if user:
-        await gather(bot.stop(), user.stop())
-    else:
-        await bot.stop()
+async def main():
+    tasks = [
+        start_cleanup(),
+        torrent_search.initiate_search_tools(),
+        restart_notification(),
+        log_check(),
+        set_commands(bot),
+        start_aria2_listener()
+    ]
+    await gather(*tasks)
 
-# Run the main coroutine and the bot
-bot_run = bot.loop.run_until_complete
-bot_run(main())
-bot_run(stop_signals())
+    bot.add_handler(MessageHandler(start, filters=command(BotCommands.StartCommand) & private))
+    bot.add_handler(CallbackQueryHandler(token_callback, filters=regex(r'^pass')))
+    bot.add_handler(MessageHandler(login, filters=command(BotCommands.LoginCommand) & private))
+    bot.add_handler(MessageHandler(log, filters=command(BotCommands.LogCommand) & CustomFilters.sudo))
+    bot.add_handler(MessageHandler(restart, filters=command(BotCommands.RestartCommand) & CustomFilters.sudo))
+    bot.add_handler(MessageHandler(ping, filters=command(BotCommands.PingCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
+    bot.add_handler(MessageHandler(stats, filters=command(BotCommands.StatsCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
+
+    LOGGER.info("Bot Started Successfully!")
+    signal(SIGINT, exit_clean_up)
+
+    app = web.Application()
+    app.router.add_route('GET', '/health', health_check)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8080)
+    await site.start()
+    LOGGER.info("Health check server started at http://0.0.0.0:8080/health")
+
+    await idle()
+
+if __name__ == "__main__":
+    asyncio.run(main())
