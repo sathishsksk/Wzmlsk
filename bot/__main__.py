@@ -124,7 +124,10 @@ async def ping(_, message):
     end_time = monotonic()
     ping_time_ms = int((end_time - start_time) * 1000)
     await editMessage(reply, BotTheme('PING_VALUE', value=ping_time_ms))
-    
+
+async def log(_, message):
+    await sendFile(message, 'Logs.txt')
+  
 async def log_check():
     if config_dict['LEECH_LOG_ID']:
         for chat_id in config_dict['LEECH_LOG_ID'].split():
