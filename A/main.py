@@ -1,0 +1,179 @@
+import asyncio
+from aiohttp import web
+from datetime import datetime, timezone
+from base64 import b64decode
+from aiofiles import open as aiopen
+from pyrogram import idle
+from pyrogram.enums import ChatMemberStatus, ChatType
+from pyrogram.handlers import MessageHandler, CallbackQueryHandler
+from pyrogram.filters import command, private, regex
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+from bot import bot, user, config_dict, user_data, LOGGER, Interval, QbInterval, INCOMPLETE_TASK_NOTIFIER, scheduler
+from bot.version import get_version
+from .helper.ext_utils.fs_utils import start_cleanup, clean_all, exit_clean_up
+from .helper.ext_utils.bot_utils import get_readable_time, sync_to_async, new_task, set_commands, update_user_ldata, get_stats
+from .helper.ext_utils.db_handler import DbManager
+from .helper.telegram_helper.bot_commands import BotCommands
+from .helper.telegram_helper.message_utils import sendMessage, editMessage, editReplyMarkup, sendFile, delete_all_messages
+from .helper.telegram_helper.filters import CustomFilters
+from .helper.telegram_helper.button_build import ButtonMaker
+from .helper.listeners.aria2_listener import start_aria2_listener
+from .helper.themes import BotTheme
+from .modules import authorize, clone, gd_count, gd_delete, gd_list, cancel_mirror, mirror_leech, status, torrent_search, torrent_select, ytdlp, \
+                     rss, shell, eval, users_settings, bot_settings, speedtest, save_msg, images, imdb, anilist, mediainfo, mydramalist, gen_pyro_sess, \
+                     gd_clean, broadcast, category_select
+
+async def health_check(request):
+    return web.Response(text="OK", content_type="text/plain")
+
+@new_task
+async def start(client, message):
+    buttons = ButtonMaker()
+    buttons.ubutton(BotTheme('ST_BN1_NAME'), BotTheme('ST_BN1_URL'))
+    buttons.ubutton(BotTheme('ST_BN2_NAME'), BotTheme('ST_BN2_URL'))
+    reply_markup = buttons.build_menu(2)
+    
+    if len(message.command) > 1 and message.command[1] == "wzmlx":
+        await delete_all_messages(message.chat.id)
+    elif len(message.command) > 1 and config_dict['TOKEN_TIMEOUT']:
+        userid = message.from_user.id
+        encrypted_url = message.command[1]
+        input_token, pre_uid = (b64decode(encrypted_url.encode()).decode()).split('&&')
+        
+        if int(pre_uid) != userid:
+            return await sendMessage(message, BotTheme('OWN_TOKEN_GENERATE'))
+        
+        data = user_data.get(userid, {})
+        
+        if 'token' not in data or data['token'] != input_token:
+            return await sendMessage(message, BotTheme('USED_TOKEN'))
+        elif config_dict['LOGIN_PASS'] is not None and data['token'] == config_dict['LOGIN_PASS']:
+            return await sendMessage(message, BotTheme('LOGGED_PASSWORD'))
+        
+        buttons.ibutton(BotTheme('ACTIVATE_BUTTON'), f'pass {input_token}', 'header')
+        reply_markup = buttons.build_menu(2)
+        msg = BotTheme('TOKEN_MSG', token=input_token, validity=get_readable_time(int(config_dict["TOKEN_TIMEOUT"])))
+        return await sendMessage(message, msg, reply_markup)
+    
+    elif await CustomFilters.authorized(client, message):
+        start_string = BotTheme('ST_MSG', help_command=f"/{BotCommands.HelpCommand}")
+        await sendMessage(message, start_string, reply_markup, photo='IMAGES')
+    elif config_dict['BOT_PM']:
+        await sendMessage(message, BotTheme('ST_BOTPM'), reply_markup, photo='IMAGES')
+    else:
+        await sendMessage(message, BotTheme('ST_UNAUTH'), reply_markup, photo='IMAGES')
+    
+    await DbManager().update_pm_users(message.from_user.id)
+
+async def token_callback(_, query):
+    user_id = query.from_user.id
+    input_token = query.data.split()[1]
+    data = user_data.get(user_id, {})
+    
+    if 'token' not in data or data['token'] != input_token:
+        return await query.answer('Already Used, Generate New One', show_alert=True)
+    
+    update_user_ldata(user_id, 'token', str(uuid4()))
+    update_user_ldata(user_id, 'time', time())
+    await query.answer('Activated Temporary Token!', show_alert=True)
+    
+    kb = query.message.reply_markup.inline_keyboard[1:]
+    kb.insert(0, [InlineKeyboardButton(BotTheme('ACTIVATED'), callback_data='pass activated')])
+    await editReplyMarkup(query.message, InlineKeyboardMarkup(kb))
+
+async def login(_, message):
+    if config_dict['LOGIN_PASS'] is None:
+        return
+    elif len(message.command) > 1:
+        user_id = message.from_user.id
+        input_pass = message.command[1]
+        
+        if user_data.get(user_id, {}).get('token', '') == config_dict['LOGIN_PASS']:
+            return await sendMessage(message, BotTheme('LOGGED_IN'))
+        
+        if input_pass != config_dict['LOGIN_PASS']:
+            return await sendMessage(message, BotTheme('INVALID_PASS'))
+        
+        update_user_ldata(user_id, 'token', config_dict['LOGIN_PASS'])
+        return await sendMessage(message, BotTheme('PASS_LOGGED'))
+    else:
+        await sendMessage(message, BotTheme('LOGIN_USED'))
+
+async def restart(client, message):
+    restart_message = await sendMessage(message, BotTheme('RESTARTING'))
+    
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
+    
+    await delete_all_messages(message.chat.id)
+    
+    for interval in [QbInterval, Interval]:
+        if interval:
+            interval[0].cancel()
+    
+    await sync_to_async(clean_all)
+    
+    proc1 = await asyncio.create_subprocess_exec('pkill', '-9', '-f', 'gunicorn|aria2c|qbittorrent-nox|ffmpeg|rclone')
+    proc2 = await asyncio.create_subprocess_exec('python3', 'update.py')
+    
+    await asyncio.gather(proc1.wait(), proc2.wait())
+    
+    async with aiopen(".restartmsg", "w") as f:
+        await f.write(f"{restart_message.chat.id}\n{restart_message.id}\n")
+    
+    osexecl(executable, executable, "-m", "bot")
+
+async def ping(_, message):
+    start_time = datetime.now()
+    reply = await sendMessage(message, BotTheme('PING'))
+    end_time = datetime.now()
+    ping_time_ms = int((end_time - start_time).total_seconds() * 1000)
+    await editMessage(reply, BotTheme('PING_VALUE', value=ping_time_ms))
+
+async def log(_, message):
+    buttons = ButtonMaker()
+    buttons.ibutton(BotTheme('LOG_DISPLAY_BT'), f'wzmlx {message.from_user.id} logdisplay')
+    buttons.ibutton(BotTheme('WEB_PASTE_BT'), f'wzmlx {message.from_user.id} webpaste')
+    await sendFile(message, 'log.txt', buttons=buttons.build_menu(1))
+
+async def restart_notification():
+    now = datetime.now(timezone(config_dict['TIMEZONE']))
+    restart_msg_file = ".restartmsg"
+    
+    if await aiopen(restart_msg_file, "r"):
+        async with aiopen(restart_msg_file, "r") as f:
+            chat_id, msg_id = map(int, f.read().splitlines())
+    else:
+        chat_id, msg_id = 0, 0
+
+    async def send_incomplete_task_message(cid, msg):
+        try:
+            if msg.startswith("⌬ <b><i>Restarted Successfully!</i></b>"):
+                await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=msg, disable_web_page_preview=True)
+                await aioremove(restart_msg_file)
+            else:
+                await bot.send_message(chat_id=cid, text=msg, disable_web_page_preview=True, disable_notification=True)
+        except Exception as e:
+            LOGGER.error(e)
+
+    if INCOMPLETE_TASK_NOTIFIER and DATABASE_URL:
+        if notifier_dict := await DbManager().get_incomplete_tasks():
+            for cid, data in notifier_dict.items():
+                msg = (BotTheme('RESTART_SUCCESS', time=now.strftime('%I:%M:%S %p'), date=now.strftime('%d/%m/%y'), timz=config_dict['TIMEZONE'], version=get_version())
+                       if cid == chat_id else BotTheme('RESTARTED'))
+                msg += "\n\n⌬ <b><i>Incomplete Tasks!</i></b>"
+                for tag, links in data.items():
+                    msg += f"\n➲ <b>User:</b> {tag}\n┖ <b>Tasks:</b>"
+                    for index, link in enumerate(links, start=1):
+                        msg_link, source = next(iter(link.items()))
+                        msg += f" {index}. <a href='{source}'>S</a> ->  <a href='{msg_link}'>L</a> |"
+                        if len(msg.encode()) > 4000:
+                            await send_incomplete_task_message(cid, msg)
+                            msg = ''
+                if msg:
+                    await send_incomplete_task_message(cid, msg)
+
+    if await aiopen(restart_msg_file, "r"):
+        try:
+            await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=BotTheme('RESTART_SUCCESS', time=now.strftime('%I:%M:%S
