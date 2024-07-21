@@ -37,7 +37,7 @@ from .modules import authorize, clone, gd_count, gd_delete, gd_list, cancel_mirr
                      gd_clean, broadcast, category_select
 
 async def health_check(request):
-    return web.Response(text="OK", content_type="text/plain")
+    return web.json_response({"alive": True})
 
 async def stats(client, message):
     msg, btns = await get_stats(message)
@@ -205,10 +205,6 @@ async def log_check():
             except Exception as e:
                 LOGGER.error(f"Not Connected Chat ID : {chat_id}, ERROR: {e}")
 
-async def health_check(request):
-    return web.Response(text="OK", content_type="text/plain")
-
-
 async def main():
     tasks = [
         start_cleanup(),
@@ -238,9 +234,9 @@ async def main():
     # Assuming `runner` is an instance of aiohttp.web.AppRunner()
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8080)  # Customize your host and port here
+    site = web.TCPSite(runner, '0.0.0.0', 80)  # Customize your host and port here
     await site.start()
-    LOGGER.info("Health check server started at http://0.0.0.0:8080/health")
+    LOGGER.info("Health check server started at http://0.0.0.0:80/health")
 
     await idle()  # Start the main event loop for the bot
 
