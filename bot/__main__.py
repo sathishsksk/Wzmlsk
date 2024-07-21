@@ -154,7 +154,6 @@ async def log_check():
                 LOGGER.error(f"Not Connected Chat ID : {chat_id}, ERROR: {e}")
 
 async def restart_notification():
-    now = datetime.now(timezone(config_dict['TIMEZONE']))
     if await aiopath.isfile(".restartmsg"):
         with open(".restartmsg") as f:
             chat_id, msg_id = map(int, f)
@@ -163,15 +162,39 @@ async def restart_notification():
 
     async def send_incomplete_task_message(cid, msg):
         try:
-            if msg.startswith("⌬ <b><i>Restarted Successfully!</i></b>"):
-                await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=msg, disable_web_page_preview=True)
+            if msg.startswith('Restarted Successfully!'):
+                await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text='Restarted Successfully!')
+                await bot.send_message(chat_id, msg, disable_web_page_preview=True, reply_to_message_id=msg_id)
                 await aioremove(".restartmsg")
             else:
-                await bot.send_message(chat_id, msg)
+                await bot.send_message(chat_id=cid, text=msg, disable_web_page_preview=True,
+                                       disable_notification=True)
         except Exception as e:
-            LOGGER.error(f"Restart Notification: {e}")
+            LOGGER.error(e)
+    if DATABASE_URL:
+        if INCOMPLETE_TASK_NOTIFIER and (notifier_dict := await DbManager().get_incomplete_tasks()):
+            for cid, data in notifier_dict.items():
+                msg = 'Restarted Successfully!' if cid == chat_id else 'Bot Restarted!'
+                for tag, links in data.items():
+                    msg += f"\n\n👤 {tag} Do your tasks again. \n"
+                    for index, link in enumerate(links, start=1):
+                        msg += f" {index}: {link} \n"
+                        if len(msg.encode()) > 4000:
+                            await send_incomplete_task_message(cid, msg)
+                            msg = ''
+                if msg:
+                    await send_incomplete_task_message(cid, msg)
 
-    await send_incomplete_task_message(chat_id, f"⌬ <b><i>Restarted Successfully!</i></b> {now.strftime('Date: %B %d, %Y\nTime: %I:%M %p %Z')}")
+        if STOP_DUPLICATE_TASKS:
+            await DbManager().clear_download_links()
+
+
+    if await aiopath.isfile(".restartmsg"):
+        try:
+            await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text='Restarted Successfully!')
+        except:
+            pass
+        await aioremove(".restartmsg")
 
 async def main():
     tasks = [
