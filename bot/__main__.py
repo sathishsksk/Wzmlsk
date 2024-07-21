@@ -226,5 +226,6 @@ async def main():
   
     bot.loop.run_forever()
 
-if __name__ == '__main__':
-    bot.loop.run_until_complete(main())
+
+if __name__ == "__main__":
+    asyncio.run(main())
