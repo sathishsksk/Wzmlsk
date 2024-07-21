@@ -9,7 +9,6 @@ from uuid import uuid4
 from base64 import b64decode
 from importlib import import_module, reload
 
-from requests import get as rget
 from pytz import timezone
 from bs4 import BeautifulSoup
 from signal import signal, SIGINT
@@ -37,7 +36,7 @@ from .modules import authorize, clone, gd_count, gd_delete, gd_list, cancel_mirr
                      gd_clean, broadcast, category_select
 
 async def health_check(request):
-    return web.json_response({"alive": True})
+    return web.Response(text="OK", content_type="text/plain")
 
 async def stats(client, message):
     msg, btns = await get_stats(message)
@@ -126,57 +125,6 @@ async def ping(_, message):
     ping_time_ms = int((end_time - start_time) * 1000)
     await editMessage(reply, BotTheme('PING_VALUE', value=ping_time_ms))
     
-async def log(_, message):
-    buttons = ButtonMaker()
-    buttons.ibutton(BotTheme('LOG_DISPLAY_BT'), f'wzmlx {message.from_user.id} logdisplay')
-    buttons.ibutton(BotTheme('WEB_PASTE_BT'), f'wzmlx {message.from_user.id} webpaste')
-    await sendFile(message, 'log.txt', buttons=buttons.build_menu(1))
-
-# Continue with other async functions...
-
-async def restart_notification():
-    now = datetime.now(timezone(config_dict['TIMEZONE']))
-    if await aiopath.isfile(".restartmsg"):
-        with open(".restartmsg") as f:
-            chat_id, msg_id = map(int, f)
-    else:
-        chat_id, msg_id = 0, 0
-
-    async def send_incomplete_task_message(cid, msg):
-        try:
-            if msg.startswith("⌬ <b><i>Restarted Successfully!</i></b>"):
-                await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=msg, disable_web_page_preview=True)
-                await aioremove(".restartmsg")
-            else:
-                await bot.send_message(chat_id=cid, text=msg, disable_web_page_preview=True, disable_notification=True)
-        except Exception as e:
-            LOGGER.error(e)
-
-    if INCOMPLETE_TASK_NOTIFIER and DATABASE_URL:
-        if notifier_dict := await DbManager().get_incomplete_tasks():
-            for cid, data in notifier_dict.items():
-                msg = (BotTheme('RESTART_SUCCESS', time=now.strftime('%I:%M:%S %p'), date=now.strftime('%d/%m/%y'), timz=config_dict['TIMEZONE'], version=get_version())
-                       if cid == chat_id else BotTheme('RESTARTED'))
-                msg += "\n\n⌬ <b><i>Incomplete Tasks!</i></b>"
-                for tag, links in data.items():
-                    msg += f"\n➲ <b>User:</b> {tag}\n┖ <b>Tasks:</b>"
-                    for index, link in enumerate(links, start=1):
-                        msg_link, source = next(iter(link.items()))
-                        msg += f" {index}. <a href='{source}'>S</a> ->  <a href='{msg_link}'>L</a> |"
-                        if len(msg.encode()) > 4000:
-                            await send_incomplete_task_message(cid, msg)
-                            msg = ''
-                if msg:
-                    await send_incomplete_task_message(cid, msg)
-
-    if await aiopath.isfile(".restartmsg"):
-        try:
-            await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=BotTheme('RESTART_SUCCESS', time=now.strftime('%I:%M:%S %p'), date=now.strftime('%d/%m/%y'), timz=config_dict['TIMEZONE'], version=get_version()))
-        except Exception as e:
-            LOGGER.error(e)
-        await aioremove(".restartmsg")
-
-
 async def log_check():
     if config_dict['LEECH_LOG_ID']:
         for chat_id in config_dict['LEECH_LOG_ID'].split():
@@ -205,12 +153,32 @@ async def log_check():
             except Exception as e:
                 LOGGER.error(f"Not Connected Chat ID : {chat_id}, ERROR: {e}")
 
+async def restart_notification():
+    now = datetime.now(timezone(config_dict['TIMEZONE']))
+    if await aiopath.isfile(".restartmsg"):
+        with open(".restartmsg") as f:
+            chat_id, msg_id = map(int, f)
+    else:
+        chat_id, msg_id = 0, 0
+
+    async def send_incomplete_task_message(cid, msg):
+        try:
+            if msg.startswith("⌬ <b><i>Restarted Successfully!</i></b>"):
+                await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=msg, disable_web_page_preview=True)
+                await aioremove(".restartmsg")
+            else:
+                await bot.send_message(chat_id, msg)
+        except Exception as e:
+            LOGGER.error(f"Restart Notification: {e}")
+
+    await send_incomplete_task_message(chat_id, f"⌬ <b><i>Restarted Successfully!</i></b> {now.strftime('Date: %B %d, %Y\nTime: %I:%M %p %Z')}")
+
 async def main():
     tasks = [
         start_cleanup(),
         torrent_search.initiate_search_tools(),
         restart_notification(),
-        log_check(),
+        log_check(),  # No parameters are passed here
         set_commands(bot),
     ]
     await asyncio.gather(*tasks)
@@ -234,9 +202,9 @@ async def main():
     # Assuming `runner` is an instance of aiohttp.web.AppRunner()
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 80)  # Customize your host and port here
+    site = web.TCPSite(runner, '0.0.0.0', 8080)  # Customize your host and port here
     await site.start()
-    LOGGER.info("Health check server started at http://0.0.0.0:80/health")
+    LOGGER.info("Health check server started at http://0.0.0.0:8080/health")
 
     await idle()  # Start the main event loop for the bot
 
